@@ -86,6 +86,7 @@ pub fn run() {
             .resizable(true)
             .center()
             .initialization_script(INIT_SCRIPT)
+            .devtools(true)
             .build()?;
 
             // ── Tray icon ─────────────────────────────────────────────
