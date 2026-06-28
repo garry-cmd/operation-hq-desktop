@@ -1,1 +1,75 @@
+<!DOCTYPE html>
+<html style="margin:0;padding:0;width:100%;height:100%;overflow:hidden;">
+<head>
+  <meta charset="utf-8">
+  <title>Operation HQ</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #0f1117; }
+    iframe { width: 100%; height: 100%; border: none; display: block; }
+  </style>
+</head>
+<body>
+  <iframe id="app" src="https://hq.svirene.com" allow="clipboard-read; clipboard-write"></iframe>
+  <script>
+    const frame = document.getElementById('app');
+    const APP_ORIGIN = 'https://hq.svirene.com';
 
+    // Forward Tauri events into the iframe as postMessages
+    function forwardEvent(name, payload) {
+      frame.contentWindow.postMessage(
+        { type: 'HQ_EVENT', event: name, payload },
+        APP_ORIGIN
+      );
+    }
+
+    // Wait for __TAURI__ to be available, then set up event listeners
+    function setupTauriEvents() {
+      if (!window.__TAURI__?.event) {
+        setTimeout(setupTauriEvents, 100);
+        return;
+      }
+      window.__TAURI__.event.listen('hq:capture', (e) => {
+        forwardEvent('hq:capture', e.payload);
+      });
+    }
+    setupTauriEvents();
+
+    // Tell the iframe the bridge is ready after it loads
+    frame.addEventListener('load', () => {
+      frame.contentWindow.postMessage({ type: 'HQ_TAURI_READY' }, APP_ORIGIN);
+    });
+
+    // Handle requests from the iframe
+    window.addEventListener('message', async (event) => {
+      if (event.origin !== APP_ORIGIN) return;
+      const { type, id, payload } = event.data || {};
+      if (!type || !type.startsWith('HQ_')) return;
+
+      const reply = (result, error) => {
+        frame.contentWindow.postMessage(
+          { type: 'HQ_REPLY', id, result: result ?? null, error: error ?? null },
+          APP_ORIGIN
+        );
+      };
+
+      try {
+        if (type === 'HQ_PING') {
+          reply(true);
+        } else if (type === 'HQ_PICK_FILE') {
+          const result = await window.__TAURI__.core.invoke('pick_file');
+          reply(result);
+        } else if (type === 'HQ_PICK_FOLDER') {
+          const result = await window.__TAURI__.core.invoke('pick_folder');
+          reply(result);
+        } else if (type === 'HQ_SHELL_OPEN') {
+          await window.__TAURI__.core.invoke('shell_open', { url: payload.url });
+          reply(true);
+        }
+      } catch (e) {
+        reply(null, String(e));
+      }
+    });
+  </script>
+</body>
+</html>

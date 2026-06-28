@@ -1,17 +1,10 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "remote-access",
-  "description": "Allows hq.svirene.com to invoke native commands",
+  "description": "No remote permissions needed — iframe handles cross-origin via postMessage",
   "windows": ["main"],
   "remote": {
     "urls": ["https://hq.svirene.com/*"]
   },
-  "permissions": [
-    "core:default",
-    "core:event:allow-listen",
-    "core:event:allow-unlisten",
-    "core:window:allow-start-dragging",
-    "dialog:allow-open",
-    "shell:allow-open"
-  ]
+  "permissions": []
 }

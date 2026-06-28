@@ -21,7 +21,7 @@ fn emit_capture<R: Runtime>(app: &AppHandle<R>, kind: &str) {
     }
 }
 
-// ── Invoke commands ────────────────────────────────────────────────────────
+// ── Invoke commands — only called from tauri://localhost (trusted) ─────────
 
 #[tauri::command]
 async fn pick_file(app: AppHandle) -> Result<Option<String>, String> {
@@ -47,23 +47,6 @@ async fn ping() -> Result<bool, String> {
     Ok(true)
 }
 
-// Bridge script injected before any page JS runs.
-// __TAURI__.core.invoke is available because withGlobalTauri: true.
-// The remote capability in capabilities/remote.json grants invoke access
-// to hq.svirene.com for our four commands.
-const INIT_SCRIPT: &str = r#"
-(function() {
-  window.__HQ_TAURI__ = {
-    isTauri: true,
-    ping: () => window.__TAURI__.core.invoke('ping'),
-    pickFile: (opts) => window.__TAURI__.core.invoke('pick_file', opts || {}),
-    pickFolder: (opts) => window.__TAURI__.core.invoke('pick_folder', opts || {}),
-    shellOpen: (url) => window.__TAURI__.core.invoke('shell_open', { url }),
-  };
-  console.log('[HQ Tauri] bridge ready — invoke-based');
-})();
-"#;
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -73,22 +56,6 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .invoke_handler(tauri::generate_handler![ping, pick_file, pick_folder, shell_open])
         .setup(|app| {
-            // Create the window programmatically so we can attach the init script.
-            // This replaces the windows[] entry in tauri.conf.json.
-            let _window = tauri::WebviewWindowBuilder::new(
-                app,
-                "main",
-                tauri::WebviewUrl::External("https://hq.svirene.com".parse().unwrap()),
-            )
-            .title("Operation HQ")
-            .inner_size(1440.0, 900.0)
-            .min_inner_size(800.0, 600.0)
-            .resizable(true)
-            .center()
-            .initialization_script(INIT_SCRIPT)
-            .devtools(true)
-            .build()?;
-
             // ── Tray icon ─────────────────────────────────────────────
             let open_item = MenuItem::with_id(app, "open", "Open Operation HQ", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
