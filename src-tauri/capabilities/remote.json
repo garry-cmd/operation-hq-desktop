@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "remote-access",
-  "description": "Allows hq.svirene.com to invoke custom commands",
+  "description": "Allows hq.svirene.com to invoke native commands",
   "windows": ["main"],
   "remote": {
     "urls": ["https://hq.svirene.com/*"]
@@ -10,6 +10,7 @@
     "core:default",
     "core:event:allow-listen",
     "core:event:allow-unlisten",
+    "core:window:allow-start-dragging",
     "dialog:allow-open",
     "shell:allow-open"
   ]

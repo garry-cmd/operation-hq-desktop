@@ -4,7 +4,6 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, Runtime,
 };
-use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
 
 fn show_window<R: Runtime>(app: &AppHandle<R>) {
@@ -22,6 +21,49 @@ fn emit_capture<R: Runtime>(app: &AppHandle<R>, kind: &str) {
     }
 }
 
+// ── Invoke commands ────────────────────────────────────────────────────────
+
+#[tauri::command]
+async fn pick_file(app: AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let path = app.dialog().file().blocking_pick_file();
+    Ok(path.map(|p| p.to_string()))
+}
+
+#[tauri::command]
+async fn pick_folder(app: AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let path = app.dialog().file().blocking_pick_folder();
+    Ok(path.map(|p| p.to_string()))
+}
+
+#[tauri::command]
+async fn shell_open(url: String) -> Result<(), String> {
+    open::that(&url).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ping() -> Result<bool, String> {
+    Ok(true)
+}
+
+// Bridge script injected before any page JS runs.
+// __TAURI__.core.invoke is available because withGlobalTauri: true.
+// The remote capability in capabilities/remote.json grants invoke access
+// to hq.svirene.com for our four commands.
+const INIT_SCRIPT: &str = r#"
+(function() {
+  window.__HQ_TAURI__ = {
+    isTauri: true,
+    ping: () => window.__TAURI__.core.invoke('ping'),
+    pickFile: (opts) => window.__TAURI__.core.invoke('pick_file', opts || {}),
+    pickFolder: (opts) => window.__TAURI__.core.invoke('pick_folder', opts || {}),
+    shellOpen: (url) => window.__TAURI__.core.invoke('shell_open', { url }),
+  };
+  console.log('[HQ Tauri] bridge ready — invoke-based');
+})();
+"#;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -29,82 +71,24 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        // ── Custom URI scheme: hq://localhost/<command> ──────────────────
-        // Called via fetch('hq://localhost/pick-file') from the webview.
-        // Bypasses the IPC/ACL system entirely — no capability config needed.
-        .register_asynchronous_uri_scheme_protocol("hq", |ctx, request, responder| {
-            let app = ctx.app_handle().clone();
-            let path = request.uri().path().to_string();
-
-            std::thread::spawn(move || {
-                fn json_response(body: String) -> http::Response<Vec<u8>> {
-                    http::Response::builder()
-                        .header("Content-Type", "application/json")
-                        .header("Access-Control-Allow-Origin", "https://hq.svirene.com")
-                        .body(body.into_bytes())
-                        .unwrap()
-                }
-
-                fn error_response(msg: &str) -> http::Response<Vec<u8>> {
-                    http::Response::builder()
-                        .status(400)
-                        .header("Content-Type", "application/json")
-                        .header("Access-Control-Allow-Origin", "https://hq.svirene.com")
-                        .body(format!("{{\"error\":\"{}\"}}", msg).into_bytes())
-                        .unwrap()
-                }
-
-                match path.as_str() {
-                    "/ping" => {
-                        responder.respond(json_response("{\"ok\":true}".to_string()));
-                    }
-
-                    "/pick-file" => {
-                        let result = app.dialog().file().blocking_pick_file();
-                        let body = match result {
-                            Some(p) => format!("{{\"path\":{}}}", 
-                                serde_json::to_string(&p.to_string()).unwrap_or("null".to_string())),
-                            None => "{\"path\":null}".to_string(),
-                        };
-                        responder.respond(json_response(body));
-                    }
-
-                    "/pick-folder" => {
-                        let result = app.dialog().file().blocking_pick_folder();
-                        let body = match result {
-                            Some(p) => format!("{{\"path\":{}}}", 
-                                serde_json::to_string(&p.to_string()).unwrap_or("null".to_string())),
-                            None => "{\"path\":null}".to_string(),
-                        };
-                        responder.respond(json_response(body));
-                    }
-
-                    "/shell-open" => {
-                        // URL is passed as a query param: hq://localhost/shell-open?url=...
-                        let uri = request.uri();
-                        let query = uri.query().unwrap_or("");
-                        let url = url_decode(
-                            query.split('&')
-                                .find(|p| p.starts_with("url="))
-                                .and_then(|p| p.strip_prefix("url="))
-                                .unwrap_or("")
-                        );
-                        if url.is_empty() {
-                            responder.respond(error_response("missing url param"));
-                        } else {
-                            let _ = open::that(&url);
-                            responder.respond(json_response("{\"ok\":true}".to_string()));
-                        }
-                    }
-
-                    _ => {
-                        responder.respond(error_response("unknown command"));
-                    }
-                }
-            });
-        })
+        .invoke_handler(tauri::generate_handler![ping, pick_file, pick_folder, shell_open])
         .setup(|app| {
-            // ── Tray icon ──────────────────────────────────────────────
+            // Create the window programmatically so we can attach the init script.
+            // This replaces the windows[] entry in tauri.conf.json.
+            let _window = tauri::WebviewWindowBuilder::new(
+                app,
+                "main",
+                tauri::WebviewUrl::External("https://hq.svirene.com".parse().unwrap()),
+            )
+            .title("Operation HQ")
+            .inner_size(1440.0, 900.0)
+            .min_inner_size(800.0, 600.0)
+            .resizable(true)
+            .center()
+            .initialization_script(INIT_SCRIPT)
+            .build()?;
+
+            // ── Tray icon ─────────────────────────────────────────────
             let open_item = MenuItem::with_id(app, "open", "Open Operation HQ", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&open_item, &quit_item])?;
@@ -135,7 +119,7 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            // ── Global shortcuts ────────────────────────────────────────
+            // ── Global shortcuts ──────────────────────────────────────
             let shortcut_new_task = Shortcut::new(Some(Modifiers::META), Code::KeyT);
             let shortcut_new_note = Shortcut::new(Some(Modifiers::META), Code::KeyN);
 
@@ -160,27 +144,4 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
-}
-
-/// Percent-decode a URL-encoded string.
-fn url_decode(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut chars = s.bytes();
-    while let Some(b) = chars.next() {
-        if b == b'%' {
-            let h1 = chars.next().unwrap_or(0);
-            let h2 = chars.next().unwrap_or(0);
-            if let Ok(decoded) = u8::from_str_radix(
-                std::str::from_utf8(&[h1, h2]).unwrap_or(""),
-                16,
-            ) {
-                result.push(decoded as char);
-            }
-        } else if b == b'+' {
-            result.push(' ');
-        } else {
-            result.push(b as char);
-        }
-    }
-    result
 }
